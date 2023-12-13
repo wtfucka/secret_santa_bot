@@ -4,8 +4,8 @@
 
 ## Стек:
 
-*Python 3.11*  
-*Python Telegram Bot 12*
+*[Python 3.11](https://www.python.org/downloads/release/python-3110/)*  
+*[Python Telegram Bot 20.7](https://docs.python-telegram-bot.org/en/v20.7/)*
 
 ## Возможности бота:
 
@@ -15,4 +15,4 @@
 **4.** Участник может внести правки в свои данные.  
 **5.** Участник может посмотреть общее количество участников.  
   
-_Created by me_
+_Created by [me](https://github.com/wtfucka)_
