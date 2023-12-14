@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 import sys
 import sqlite3
 from pprint import pprint
@@ -176,7 +177,7 @@ async def handle_user_input(update: Update, context: CallbackContext) -> None:
         context.user_data['other_info'] = user_input
         context.user_data['waiting_for_other_info'] = False
 
-    if context.user_data['update_all_data']:
+    if context.user_data.get('update_all_data', False):
         return await update_data_on_db(update, context)
 
     return await write_data_to_db(update, context)
@@ -194,29 +195,36 @@ async def write_data_to_db(update: Update, context: CallbackContext):
     other_info = context.user_data.get('other_info', '')
 
     if all([full_name, address, phone, other_info]):
-        with sqlite3.connect('secret_santa.db') as connection:
-            cursor = connection.cursor()
-            cursor.execute('''
-                INSERT INTO users (
-                           chat_id,
-                           full_name,
-                           address,
-                           phone_number,
-                           other_info
-                           )
-                VALUES (?, ?, ?, ?, ?)
-            ''', (chat_id,
-                  full_name,
-                  address,
-                  phone,
-                  other_info)
-                )
-        await update.message.reply_text(
-            f'Всё отлично {user_name}, ты стал участником!'
-        )
-        await update.message.reply_text(
-            'Выбери кнопку:', reply_markup=get_keybord()
-        )
+        try:
+            with sqlite3.connect('secret_santa.db') as connection:
+                cursor = connection.cursor()
+                cursor.execute('''
+                    INSERT INTO users (
+                            chat_id,
+                            full_name,
+                            address,
+                            phone_number,
+                            other_info
+                            )
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (chat_id,
+                      full_name,
+                      address,
+                      phone,
+                      other_info)
+                    )
+                connection.commit()
+            await update.message.reply_text(
+                f'Всё отлично {user_name}, ты стал участником!'
+            )
+            await update.message.reply_text(
+                'Выбери кнопку:', reply_markup=get_keybord()
+            )
+        except sqlite3.Error as error:
+            logger.error(f'Проблема с записью данных в БД: {error}')
+            await update.message.reply_text(
+                'Что-то пошло не так, попробуй еще раз'
+            )
 
 
 async def update_data_on_db(update: Update, context: CallbackContext):
@@ -230,37 +238,57 @@ async def update_data_on_db(update: Update, context: CallbackContext):
     phone = context.user_data.get('phone')
     other_info = context.user_data.get('other_info')
 
-    if not full_name:
-        query = (f'UPDATE users SET full_name = {full_name} '
-                 f'where chat_id = {chat_id}')
-    if not address:
-        query = (f'UPDATE users SET address = {address} '
-                 f'where chat_id = {chat_id}')
-    if not phone:
-        query = (f'UPDATE users SET phone = {phone} '
-                 f'where chat_id = {chat_id}')
-    if not other_info:
-        query = (f'UPDATE users SET other_info = {other_info} '
-                 f'where chat_id = {chat_id}')
+    # if not full_name:
+    #     query = (f'UPDATE users SET full_name = {full_name} '
+    #              f'where chat_id = {chat_id}')
+    # if not address:
+    #     query = (f'UPDATE users SET address = {address} '
+    #              f'where chat_id = {chat_id}')
+    # if not phone:
+    #     query = (f'UPDATE users SET phone = {phone} '
+    #              f'where chat_id = {chat_id}')
+    # if not other_info:
+    #     query = (f'UPDATE users SET other_info = {other_info} '
+    #              f'where chat_id = {chat_id}')
 
-    if context.user_data.get('update_all_data', False):
-        query = (
-            f'UPDATE users '
-            f'SET full_name = {full_name}, '
-            f'address = {address}, '
-            f'phone_number = {phone}, '
-            f'other_info = {other_info} '
-            f'WHERE chat_id = {chat_id}')
+    # if context.user_data.get('update_all_data', False):
+    #     query = (
+    #         f'UPDATE users '
+    #         f'SET full_name = {full_name}, '
+    #         f'address = {address}, '
+    #         f'phone_number = {phone}, '
+    #         f'other_info = {other_info} '
+    #         f'WHERE chat_id = {chat_id}')
 
-    if all([full_name, address, phone, other_info]):
+    update_values = []
+    if full_name:
+        update_values.append("full_name = ?")
+    if address:
+        update_values.append("address = ?")
+    if phone:
+        update_values.append("phone_number = ?")
+    if other_info:
+        update_values.append("other_info = ?")
+
+    update_values_str = ', '.join(update_values)
+    query = f'UPDATE users SET {update_values_str} WHERE chat_id = ?'
+    values = [full_name, address, phone, other_info, chat_id]
+
+    try:
         with sqlite3.connect('secret_santa.db') as connection:
             cursor = connection.cursor()
-            cursor.execute(query)
+            cursor.execute(query, values)
+            connection.commit()
         await update.message.reply_text(
             f'Всё отлично {user_name}, данные изменены!'
         )
         await update.message.reply_text(
             'Выбери кнопку:', reply_markup=get_keybord()
+        )
+    except sqlite3.Error as error:
+        logger.error(f'Проблема с записью данных в БД: {error}')
+        await update.message.reply_text(
+            'Что-то пошло не так, попробуй еще раз.'
         )
 
 
@@ -285,12 +313,12 @@ async def users_count_first_ten_users(update: Update,
     Обработка кнопки "Список участников".
     Выводит общее количество и первые 10 ФИО участников.
     """
-    button_for_all_users = InlineKeyboardButton(
+    button_view_all_users = InlineKeyboardButton(
         'Посмотреть всех',
         callback_data='all_participants',
     )
     keyboard = InlineKeyboardMarkup(
-        [[button_for_all_users]]
+        [[button_view_all_users]]
     )
     chat_id = update.effective_message.chat_id
     query = update.callback_query
@@ -327,13 +355,15 @@ def get_total_users():
     """
     Метод для подсчета количества участников.
     """
-    conn = sqlite3.connect('secret_santa.db')
-    cursor = conn.cursor()
-    query = cursor.execute('''
-        select count(*) from users;
-    ''')
-    total_users = query.fetchone()[0]
-    conn.close()
+    with sqlite3.connect('secret_santa.db') as connection:
+        try:
+            cursor = connection.cursor()
+            query = cursor.execute('''
+                select count(*) from users;
+            ''')
+            total_users = query.fetchone()[0]
+        except sqlite3.Error as error:
+            logger.error(f'Проблема с получением данных из БД: {error}')
     return total_users
 
 
@@ -341,25 +371,72 @@ def get_users_list():
     """
     Метод для вывода списка участников.
     """
-    conn = sqlite3.connect('secret_santa.db')
-    cursor = conn.cursor()
-    query = cursor.execute('''
-        select full_name from users;
-    ''')
-    user_list = [user[0] for user in query.fetchall()]
-    conn.close()
+    with sqlite3.connect('secret_santa.db') as connection:
+        try:
+            cursor = connection.cursor()
+            query = cursor.execute('''
+                select full_name from users;
+            ''')
+            user_list = [user[0] for user in query.fetchall()]
+        except sqlite3.Error as error:
+            logger.error(f'Проблема с получением данных из БД: {error}')
     return user_list
 
 
 # Обработчик команды /assign
-def assign(update: Update, context: CallbackContext) -> None:
+async def assign(update: Update, context: CallbackContext) -> None:
     """
-    Метод для распределния участников по парам в назначенное время.
+    Метод для распределения участников по парам в назначенное время.
     """
-    # Запуск алгоритма распределения подарков
-    # query = update.callback_query
-    # assign_gifts()
-    update.message.reply_text('Распределение подарков завершено.')
+    list_of_participants = 'select id from users'
+    list_of_santas = secret_santa_algorithm(list_of_participants)
+
+    list_of_persons = get_list_persons()
+    for person in list_of_persons:
+        full_name, address, phone = person
+        for chat_id, full_name in list_of_chats.items():
+            await bot.send_message(
+                chat_id=chat_id,
+                text=('Распределение участников завершено.\n'
+                      f'Тебе нужно сделать подарок для - {full_name}.\n'
+                      f'Отправить подарок можно по адресу - {address}.\n'
+                      'Если нужно что-то уточнить у одариваемого, '
+                      f'то вот номер - {phone}')
+                )
+
+
+def write_santas_to_db(update: Update, context: CallbackContext):
+    chat_id = update.message.chat_id
+    query = f'UPDATE users SET assigned_user_id WHERE chat_id = ?'
+    try:
+        with sqlite3.connect('secret_santa.db') as connection:
+            cursor = connection.cursor()
+            cursor.execute(query, chat_id)
+            connection.commit()
+
+
+def secret_santa_algorithm(participants):
+    if len(participants) % 2 != 0:
+        participants.append('Фиктивный участник')
+        fake_santa = None
+        fake_reciever = None
+
+    random.shuffle(participants)
+    santa_pairs = {participants[i]: participants[(i + 1) % len(participants)] for i in range(len(participants))}
+
+    for santa, receiver in santa_pairs.items():
+        if santa == 'Фиктивный участник':
+            fake_reciever = receiver
+            fake_santa_key = santa
+        if receiver == 'Фиктивный участник':
+            fake_santa = santa
+            fake_receiver_key = santa
+
+    del santa_pairs[fake_santa_key]
+    del santa_pairs[fake_receiver_key]
+    santa_pairs[fake_santa] = fake_reciever
+
+    return santa_pairs
 
 
 # Инициализация бота
