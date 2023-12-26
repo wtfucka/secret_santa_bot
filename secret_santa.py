@@ -1,9 +1,8 @@
+import datetime
 import logging
 import os
 import random
-import sys
 import sqlite3
-from pprint import pprint
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, Bot
@@ -18,13 +17,9 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+X_DATE = datetime.datetime(2023, 12, 29)
+
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-FLAGS = {
-    'waiting_for_name': True,
-    'waiting_for_address': True,
-    'waiting_for_phone': True,
-    'waiting_for_other_info': True,
-}
 
 bot = Bot(token=TELEGRAM_TOKEN)
 application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -53,19 +48,19 @@ def get_keybord() -> InlineKeyboardMarkup:
 def get_keybord_for_edit_button() -> InlineKeyboardMarkup:
     button_fio = InlineKeyboardButton(
         'Изменить ФИО',
-        callback_data='test1',
+        callback_data='change_name',
     )
     button_address = InlineKeyboardButton(
         'Изменить адрес',
-        callback_data='test12',
+        callback_data='change_address',
     )
     button_phone = InlineKeyboardButton(
         'Изменить номер',
-        callback_data='test13',
+        callback_data='change_phone',
     )
     button_other_info = InlineKeyboardButton(
         'Изменить допинфо',
-        callback_data='test4',
+        callback_data='change_other_info',
     )
     button_all_data = InlineKeyboardButton(
         'Изменить все данные',
@@ -114,63 +109,52 @@ async def join(update: Update, context: CallbackContext) -> None:
     context.user_data['waiting_for_name'] = True
 
 
-async def handle_user_input(update: Update, context: CallbackContext) -> None:
+async def participant_user_input(update: Update, context: CallbackContext) -> None:
     """
     Забираем ответы пользователя для внесения их в БД,
-    при нажатии на кнопку "Участвовать". Во всех остальных случаях сообщения
-    не учитываются.
+    при нажатии на кнопку "Участвовать" или "Изменить все данные".
+    Во всех остальных случаях сообщения не учитываются.
     """
     chat_id = update.message.chat_id
     user_input = update.effective_message.text.strip()
 
-    # тут проблема с циклом, рефакторинг дело благое, но не быстрое :D
-    # for key, value in FLAGS.items():
-    #     # user_input = update.effective_message.text.strip()
-    #     if key == 'waiting_for_name' and value:
-    #         full_name = update.effective_message.text.strip()
-    #         # full_name = user_input
-    #         FLAGS[key] = False
-    #         await bot.send_message(chat_id=chat_id,
-    #                                text='Теперь введи свой адрес:')
-    #     elif key == 'waiting_for_address' and value:
-    #         address = update.effective_message.text.strip()
-    #         # address = user_input
-    #         FLAGS[key] = False
-    #         await bot.send_message(chat_id=chat_id,
-    #                                text='Осталось ввести номер телефона:')
-    #     elif key == 'waiting_for_phone' and value:
-    #         phone = update.effective_message.text.strip()
-    #         # phone = user_input
-    #         FLAGS[key] = False
-    #         await bot.send_message(chat_id=chat_id,
-    #                                text='Если хочешь ещё что-то добавить:')
-    #     elif key == 'waiting_for_other_info' and value:
-    #         other_info = update.effective_message.text.strip()
-    #         # other_info = user_input
-    #         FLAGS[key] = False
-    #         # await bot.send_message(chat_id=chat_id,
-    #         #                        text='Теперь введи свой адрес:')
+    # Если выбрали частичное обновление данных
+    if context.user_data.get('partial_update', False):
+        if context.user_data.get('waiting_for_name', False):
+            context.user_data['full_name'] = user_input
+            context.user_data['waiting_for_name'] = False
 
-    # старая реализация, но рабочая
+        if context.user_data.get('waiting_for_address', False):
+            context.user_data['address'] = user_input
+            context.user_data['waiting_for_address'] = False
+
+        if context.user_data.get('waiting_for_phone', False):
+            context.user_data['phone'] = user_input
+            context.user_data['waiting_for_phone'] = False
+
+        if context.user_data.get('waiting_for_other_info', False):
+            context.user_data['other_info'] = user_input
+            context.user_data['waiting_for_other_info'] = False
+
+        return await update_data_on_db(update, context)
+
+    # Если выбрали новое участие или полное обновление данных
     if context.user_data.get('waiting_for_name', False):
         context.user_data['full_name'] = user_input
         context.user_data['waiting_for_name'] = False
         context.user_data['waiting_for_address'] = True
-        # await update.message.reply_text()
         await bot.send_message(chat_id=chat_id,
                                text='Теперь введи свой адрес:')
     elif context.user_data.get('waiting_for_address', False):
         context.user_data['address'] = user_input
         context.user_data['waiting_for_address'] = False
         context.user_data['waiting_for_phone'] = True
-        # await update.message.reply_text()
         await bot.send_message(chat_id=chat_id,
                                text='Осталось ввести номер телефона:')
     elif context.user_data.get('waiting_for_phone', False):
         context.user_data['phone'] = user_input
         context.user_data['waiting_for_phone'] = False
         context.user_data['waiting_for_other_info'] = True
-        # await update.message.reply_text()
         await bot.send_message(chat_id=chat_id,
                                text='Если хочешь ещё что-то добавить:')
     elif context.user_data.get('waiting_for_other_info', False):
@@ -222,9 +206,16 @@ async def write_data_to_db(update: Update, context: CallbackContext):
             )
         except sqlite3.Error as error:
             logger.error(f'Проблема с записью данных в БД: {error}')
-            await update.message.reply_text(
-                'Что-то пошло не так, попробуй еще раз'
-            )
+            if str(error).startswith('UNIQUE constraint failed'):
+                await update.message.reply_text(
+                    'Дважды стать участником не получится.'
+                )
+            else:
+                await update.message.reply_text(
+                    'Что-то пошло не так, попробуй еще раз'
+                )
+        finally:
+            context.user_data.clear()
 
 
 async def update_data_on_db(update: Update, context: CallbackContext):
@@ -232,47 +223,30 @@ async def update_data_on_db(update: Update, context: CallbackContext):
     Записываем полученные данные в БД.
     """
     user_name = update.effective_chat.first_name
-    chat_id = update.message.chat_id
+    chat_id = update.effective_user.id
     full_name = context.user_data.get('full_name')
     address = context.user_data.get('address')
     phone = context.user_data.get('phone')
     other_info = context.user_data.get('other_info')
 
-    # if not full_name:
-    #     query = (f'UPDATE users SET full_name = {full_name} '
-    #              f'where chat_id = {chat_id}')
-    # if not address:
-    #     query = (f'UPDATE users SET address = {address} '
-    #              f'where chat_id = {chat_id}')
-    # if not phone:
-    #     query = (f'UPDATE users SET phone = {phone} '
-    #              f'where chat_id = {chat_id}')
-    # if not other_info:
-    #     query = (f'UPDATE users SET other_info = {other_info} '
-    #              f'where chat_id = {chat_id}')
-
-    # if context.user_data.get('update_all_data', False):
-    #     query = (
-    #         f'UPDATE users '
-    #         f'SET full_name = {full_name}, '
-    #         f'address = {address}, '
-    #         f'phone_number = {phone}, '
-    #         f'other_info = {other_info} '
-    #         f'WHERE chat_id = {chat_id}')
-
     update_values = []
+    values = []
     if full_name:
         update_values.append("full_name = ?")
+        values.append(full_name)
     if address:
         update_values.append("address = ?")
+        values.append(address)
     if phone:
         update_values.append("phone_number = ?")
+        values.append(phone)
     if other_info:
         update_values.append("other_info = ?")
+        values.append(other_info)
 
+    values.append(chat_id)
     update_values_str = ', '.join(update_values)
     query = f'UPDATE users SET {update_values_str} WHERE chat_id = ?'
-    values = [full_name, address, phone, other_info, chat_id]
 
     try:
         with sqlite3.connect('secret_santa.db') as connection:
@@ -290,6 +264,8 @@ async def update_data_on_db(update: Update, context: CallbackContext):
         await update.message.reply_text(
             'Что-то пошло не так, попробуй еще раз.'
         )
+    finally:
+        context.user_data.clear()
 
 
 # Обработчик команды /edit
@@ -298,12 +274,58 @@ async def edit(update: Update, context: CallbackContext) -> None:
     Обработка кнопки "Изменить данные".
     """
     query = update.callback_query
-    chat_id = update.effective_message.chat_id
     await query.answer()
     await query.edit_message_text(
         text='Какие данные хочешь изменить?',
         reply_markup=get_keybord_for_edit_button())
-    # await bot.send_message(chat_id=chat_id, text='Введи ФИО:')
+
+
+async def change_name(update: Update, context: CallbackQueryHandler):
+    """
+    Обработка кнопки "Изменить ФИО".
+    """
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        text='Введи ФИО:')
+    context.user_data['partial_update'] = True
+    context.user_data['waiting_for_name'] = True
+
+
+async def change_address(update: Update, context: CallbackQueryHandler):
+    """
+    Обработка кнопки "Изменить адресс".
+    """
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        text='Введи адрес:')
+    context.user_data['partial_update'] = True
+    context.user_data['waiting_for_address'] = True
+
+
+async def change_phone(update: Update, context: CallbackQueryHandler):
+    """
+    Обработка кнопки "Изменить номер".
+    """
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        text='Введи телефон:')
+    context.user_data['partial_update'] = True
+    context.user_data['waiting_for_phone'] = True
+
+
+async def change_other_info(update: Update, context: CallbackQueryHandler):
+    """
+    Обработка кнопки "Изменить другие данные".
+    """
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        text='Введи дополнительную информацию:')
+    context.user_data['partial_update'] = True
+    context.user_data['waiting_for_other_info'] = True
 
 
 # Обработчик команды /list
@@ -383,36 +405,96 @@ def get_users_list():
     return user_list
 
 
-# Обработчик команды /assign
-async def assign(update: Update, context: CallbackContext) -> None:
+# Обработчик команды /assign_santas_recievers
+def assign_santas_recievers() -> None:
     """
     Метод для распределения участников по парам в назначенное время.
     """
-    list_of_participants = 'select id from users'
+    with sqlite3.connect('secret_santa.db') as connection:
+        try:
+            cursor = connection.cursor()
+            query = cursor.execute('''
+                    select chat_id from users;
+                ''')
+            list_of_participants = [user[0] for user in query.fetchall()]
+        except sqlite3.Error as error:
+            logger.error(f'Проблема с получением данных из БД: {error}')
+
     list_of_santas = secret_santa_algorithm(list_of_participants)
 
-    list_of_persons = get_list_persons()
-    for person in list_of_persons:
-        full_name, address, phone = person
-        for chat_id, full_name in list_of_chats.items():
-            await bot.send_message(
-                chat_id=chat_id,
-                text=('Распределение участников завершено.\n'
-                      f'Тебе нужно сделать подарок для - {full_name}.\n'
-                      f'Отправить подарок можно по адресу - {address}.\n'
-                      'Если нужно что-то уточнить у одариваемого, '
-                      f'то вот номер - {phone}')
-                )
+    return write_santas_to_db(list_of_santas)
 
 
-def write_santas_to_db(update: Update, context: CallbackContext):
-    chat_id = update.message.chat_id
-    query = f'UPDATE users SET assigned_user_id WHERE chat_id = ?'
+async def sending_messages():
+    """
+    Метод для рассылки сообщений после распределения участников.
+    """
     try:
         with sqlite3.connect('secret_santa.db') as connection:
             cursor = connection.cursor()
-            cursor.execute(query, chat_id)
+            query = cursor.execute('''
+                    select
+                            chat_id,
+                            gift_reciever_full_name,
+                            gift_reciever_address,
+                            gift_reciever_phone_number,
+                            gift_reciever_other_info
+                    from users;
+                ''')
+            for santa in query.fetchall():
+                chat_id, gift_reciever_full_name, gift_reciever_address, gift_reciever_phone_number, gift_reciever_other_info = santa
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        'Распределение участников завершено.\n'
+                        f'Тебе нужно сделать подарок для - {gift_reciever_full_name}.\n'
+                        f'Отправить подарок можно по адресу - {gift_reciever_address}.\n'
+                        'Если нужно что-то уточнить у одариваемого, '
+                        f'то вот номер - {gift_reciever_phone_number}.\n'
+                        'А это дополнительная информация, которую он оставил, '
+                        f'вдруг пригодится - {gift_reciever_other_info}'
+                        )
+                    )
+    except sqlite3.Error as error:
+        logger.error(f'Проблема с получением данных из БД: {error}')
+
+
+def write_santas_to_db(santa_pairs):
+
+    try:
+        with sqlite3.connect('secret_santa.db') as connection:
+            cursor = connection.cursor()
+            for santa, reciever in santa_pairs.items():
+                select_query = (f'''select
+                                chat_id,
+                                full_name,
+                                address,
+                                phone_number,
+                                other_info
+                                from users
+                                where chat_id = {reciever}
+                        ''')
+                query = cursor.execute(select_query)
+                for reciever_data in query.fetchall():
+                    reciever_chat_id, reciever_full_name, reciever_address, reciever_phone, reciever_other_info = reciever_data
+                    update_query = ('''UPDATE users
+                                    SET gift_reciever_chat_id = ?,
+                                    gift_reciever_full_name = ?,
+                                    gift_reciever_address = ?,
+                                    gift_reciever_phone_number = ?,
+                                    gift_reciever_other_info = ?
+                                    WHERE chat_id = ?
+                            ''')
+                    update_values = [reciever_chat_id,
+                                     reciever_full_name,
+                                     reciever_address,
+                                     reciever_phone,
+                                     reciever_other_info,
+                                     santa]
+                    query = cursor.execute(update_query, update_values)
             connection.commit()
+    except sqlite3.Error as error:
+        logger.error(f'Проблема с получением/записью данных в БД: {error}')
 
 
 def secret_santa_algorithm(participants):
@@ -421,21 +503,24 @@ def secret_santa_algorithm(participants):
         fake_santa = None
         fake_reciever = None
 
-    random.shuffle(participants)
-    santa_pairs = {participants[i]: participants[(i + 1) % len(participants)] for i in range(len(participants))}
+        random.shuffle(participants)
+        santa_pairs = {participants[i]: participants[(i + 1) % len(participants)] for i in range(len(participants))}
 
-    for santa, receiver in santa_pairs.items():
-        if santa == 'Фиктивный участник':
-            fake_reciever = receiver
-            fake_santa_key = santa
-        if receiver == 'Фиктивный участник':
-            fake_santa = santa
-            fake_receiver_key = santa
+        for santa, receiver in santa_pairs.items():
+            if santa == 'Фиктивный участник':
+                fake_reciever = receiver
+                fake_santa_key = santa
 
-    del santa_pairs[fake_santa_key]
-    del santa_pairs[fake_receiver_key]
-    santa_pairs[fake_santa] = fake_reciever
+            if receiver == 'Фиктивный участник':
+                fake_santa = santa
+                fake_receiver_key = santa
 
+        del santa_pairs[fake_santa_key]
+        del santa_pairs[fake_receiver_key]
+        santa_pairs[fake_santa] = fake_reciever
+    else:
+        random.shuffle(participants)
+        santa_pairs = {participants[i]: participants[(i + 1) % len(participants)] for i in range(len(participants))}
     return santa_pairs
 
 
@@ -447,7 +532,8 @@ def main() -> None:
         handlers=(CommandHandler('start', start),
                   CommandHandler('join', join),
                   CallbackQueryHandler(join, 'join'),
-                  MessageHandler(filters.TEXT, callback=handle_user_input),
+                  MessageHandler(filters.TEXT,
+                                 callback=participant_user_input),
                   CommandHandler('user_list', users_count_first_ten_users),
                   CallbackQueryHandler(users_count_first_ten_users,
                                        'user_list'),
@@ -456,12 +542,24 @@ def main() -> None:
                                        'all_participants'),
                   CommandHandler('edit', edit),
                   CallbackQueryHandler(edit, 'edit'),
-                #   CommandHandler('assign', assign)
+                  CommandHandler('change_name', change_name),
+                  CallbackQueryHandler(change_name, 'change_name'),
+                  CommandHandler('change_address', change_address),
+                  CallbackQueryHandler(change_address, 'change_address'),
+                  CommandHandler('change_phone', change_phone),
+                  CallbackQueryHandler(change_phone, 'change_phone'),
+                  CommandHandler('change_other_info', change_other_info),
+                  CallbackQueryHandler(change_other_info, 'change_other_info'),
                   )
                 )
 
     # Запуск бота
     application.run_polling()
+
+    if datetime.datetime.now() >= X_DATE:
+        assign_santas_recievers()
+        # проблема с асинхронностью 
+        # await sending_messages()
 
 
 if __name__ == '__main__':

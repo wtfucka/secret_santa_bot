@@ -13,6 +13,10 @@ CREATE TABLE IF NOT EXISTS users (
     address TEXT NOT NULL,
     phone_number TEXT NOT NULL,
     other_info TEXT,
-    gift_reciever_id INTEGER
+    gift_reciever_chat_id INTEGER,
+    gift_reciever_full_name TEXT,
+    gift_reciever_address TEXT,
+    gift_reciever_phone_number TEXT,
+    gift_reciever_other_info TEXT
 );
 ''')
