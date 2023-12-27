@@ -4,6 +4,7 @@ import os
 import random
 import sqlite3
 
+import telegram.error
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, Bot
 from telegram.ext import (ApplicationBuilder,
@@ -17,12 +18,38 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-X_DATE = datetime.datetime(2023, 12, 29)
+X_DATE = datetime.datetime(2023, 12, 30)
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))
 
 bot = Bot(token=TELEGRAM_TOKEN)
 application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+
+def get_admin_keybord() -> InlineKeyboardMarkup:
+    button_join = InlineKeyboardButton(
+        'Участвовать',
+        callback_data='join',
+    )
+    button_edit_profile = InlineKeyboardButton(
+        'Изменить данные',
+        callback_data='edit',
+    )
+    button_user_list = InlineKeyboardButton(
+        'Список участников',
+        callback_data='user_list',
+    )
+    button_sending_messages = InlineKeyboardButton(
+        'Распределение и отправка сообщений',
+        callback_data='x_moment',
+    )
+    keyboard = InlineKeyboardMarkup(
+        [[button_join, button_edit_profile],
+         [button_user_list],
+         [button_sending_messages]]
+    )
+    return keyboard
 
 
 def get_keybord() -> InlineKeyboardMarkup:
@@ -80,10 +107,19 @@ async def start(update: Update, context: CallbackContext) -> None:
     Обработка команды "/start".
     """
     user = update.message.from_user
-    await update.message.reply_text(
-        f'Привет, {user.first_name}! Выбери кнопку:',
-        reply_markup=get_keybord()
-    )
+    try:
+        if user.id == ADMIN_CHAT_ID:
+            await update.message.reply_text(
+                f'Привет, {user.first_name}! Выбери кнопку:',
+                reply_markup=get_admin_keybord()
+            )
+        else:
+            await update.message.reply_text(
+                f'Привет, {user.first_name}! Выбери кнопку:',
+                reply_markup=get_keybord()
+            )
+    except telegram.error as error:
+        logger.critical(f'Что-то пошло не так: {error}')
 
 
 # Обработчик команды /join
@@ -92,30 +128,35 @@ async def join(update: Update, context: CallbackContext) -> None:
     Обработка кнопки "Участвовать" и "Изменить данные".
     """
     query = update.callback_query
-    chat_id = update.effective_message.chat_id
+    chat_id = update.effective_user.id
     action_type = update.effective_message.text
-    await query.answer()
-    if action_type == 'Какие данные хочешь изменить?':
-        context.user_data['update_all_data'] = True
-        await query.edit_message_text(
-            text='Введи новые данные.')
-    else:
-        await query.edit_message_text(
-            text=f'{update.effective_chat.first_name}, чтобы присоединиться,'
-            ' отправьте свои ФИО, адрес и номер телефона, каждое отдельным'
-            ' сообщением.\nНапример:\nИванов Илья Васильевич\nг. Мадрид,'
-            'ул. Имени Короля, д. 1, кв. 1\n790000000000.')
-    await bot.send_message(chat_id=chat_id, text='Введи ФИО:')
-    context.user_data['waiting_for_name'] = True
+    try:
+        await query.answer()
+        if action_type == 'Какие данные хочешь изменить?':
+            context.user_data['update_all_data'] = True
+            await query.edit_message_text(
+                text='Введи новые данные.')
+        else:
+            await query.edit_message_text(
+                text=f'{update.effective_chat.first_name}, чтобы '
+                'присоединиться, отправьте свои ФИО, адрес и номер телефона, '
+                'каждое отдельным сообщением.\nНапример:\nИванов Илья '
+                'Васильевич\nг. Мадрид,ул. Имени Короля, д. 1, кв. 1'
+                '\n790000000000.')
+        await bot.send_message(chat_id=chat_id, text='Введи ФИО:')
+        context.user_data['waiting_for_name'] = True
+    except telegram.error as error:
+        logger.critical(f'Что-то пошло не так: {error}')
 
 
-async def participant_user_input(update: Update, context: CallbackContext) -> None:
+async def participant_user_input(update: Update,
+                                 context: CallbackContext) -> None:
     """
     Забираем ответы пользователя для внесения их в БД,
     при нажатии на кнопку "Участвовать" или "Изменить все данные".
     Во всех остальных случаях сообщения не учитываются.
     """
-    chat_id = update.message.chat_id
+    chat_id = update.effective_user.id
     user_input = update.effective_message.text.strip()
 
     # Если выбрали частичное обновление данных
@@ -172,7 +213,7 @@ async def write_data_to_db(update: Update, context: CallbackContext):
     Записываем полученные данные в БД.
     """
     user_name = update.effective_chat.first_name
-    chat_id = update.message.chat_id
+    chat_id = update.effective_user.id
     full_name = context.user_data.get('full_name')
     address = context.user_data.get('address')
     phone = context.user_data.get('phone')
@@ -198,22 +239,28 @@ async def write_data_to_db(update: Update, context: CallbackContext):
                       other_info)
                     )
                 connection.commit()
-            await update.message.reply_text(
-                f'Всё отлично {user_name}, ты стал участником!'
-            )
-            await update.message.reply_text(
-                'Выбери кнопку:', reply_markup=get_keybord()
-            )
+            try:
+                await update.message.reply_text(
+                    f'Всё отлично {user_name}, ты стал участником!'
+                )
+                await update.message.reply_text(
+                    'Выбери кнопку:', reply_markup=get_keybord()
+                )
+            except telegram.error as tg_error:
+                logger.critical(f'Что-то пошло не так: {tg_error}')
         except sqlite3.Error as error:
             logger.error(f'Проблема с записью данных в БД: {error}')
-            if str(error).startswith('UNIQUE constraint failed'):
-                await update.message.reply_text(
-                    'Дважды стать участником не получится.'
-                )
-            else:
-                await update.message.reply_text(
-                    'Что-то пошло не так, попробуй еще раз'
-                )
+            try:
+                if str(error).startswith('UNIQUE constraint failed'):
+                    await update.message.reply_text(
+                        'Дважды стать участником не получится.'
+                    )
+                else:
+                    await update.message.reply_text(
+                        'Что-то пошло не так, попробуй еще раз'
+                    )
+            except telegram.error as tg_error:
+                logger.critical(f'Что-то пошло не так: {tg_error}')
         finally:
             context.user_data.clear()
 
@@ -253,12 +300,15 @@ async def update_data_on_db(update: Update, context: CallbackContext):
             cursor = connection.cursor()
             cursor.execute(query, values)
             connection.commit()
-        await update.message.reply_text(
-            f'Всё отлично {user_name}, данные изменены!'
-        )
-        await update.message.reply_text(
-            'Выбери кнопку:', reply_markup=get_keybord()
-        )
+        try:
+            await update.message.reply_text(
+                f'Всё отлично {user_name}, данные изменены!'
+            )
+            await update.message.reply_text(
+                'Выбери кнопку:', reply_markup=get_keybord()
+            )
+        except telegram.error as tg_error:
+            logger.critical(f'Что-то пошло не так: {tg_error}')
     except sqlite3.Error as error:
         logger.error(f'Проблема с записью данных в БД: {error}')
         await update.message.reply_text(
@@ -274,10 +324,13 @@ async def edit(update: Update, context: CallbackContext) -> None:
     Обработка кнопки "Изменить данные".
     """
     query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        text='Какие данные хочешь изменить?',
-        reply_markup=get_keybord_for_edit_button())
+    try:
+        await query.answer()
+        await query.edit_message_text(
+            text='Какие данные хочешь изменить?',
+            reply_markup=get_keybord_for_edit_button())
+    except telegram.error as tg_error:
+        logger.critical(f'Что-то пошло не так: {tg_error}')
 
 
 async def change_name(update: Update, context: CallbackQueryHandler):
@@ -285,11 +338,14 @@ async def change_name(update: Update, context: CallbackQueryHandler):
     Обработка кнопки "Изменить ФИО".
     """
     query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        text='Введи ФИО:')
-    context.user_data['partial_update'] = True
-    context.user_data['waiting_for_name'] = True
+    try:
+        await query.answer()
+        await query.edit_message_text(
+            text='Введи ФИО:')
+        context.user_data['partial_update'] = True
+        context.user_data['waiting_for_name'] = True
+    except telegram.error as tg_error:
+        logger.critical(f'Что-то пошло не так: {tg_error}')
 
 
 async def change_address(update: Update, context: CallbackQueryHandler):
@@ -297,11 +353,14 @@ async def change_address(update: Update, context: CallbackQueryHandler):
     Обработка кнопки "Изменить адресс".
     """
     query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        text='Введи адрес:')
-    context.user_data['partial_update'] = True
-    context.user_data['waiting_for_address'] = True
+    try:
+        await query.answer()
+        await query.edit_message_text(
+            text='Введи адрес:')
+        context.user_data['partial_update'] = True
+        context.user_data['waiting_for_address'] = True
+    except telegram.error as tg_error:
+        logger.critical(f'Что-то пошло не так: {tg_error}')
 
 
 async def change_phone(update: Update, context: CallbackQueryHandler):
@@ -309,11 +368,14 @@ async def change_phone(update: Update, context: CallbackQueryHandler):
     Обработка кнопки "Изменить номер".
     """
     query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        text='Введи телефон:')
-    context.user_data['partial_update'] = True
-    context.user_data['waiting_for_phone'] = True
+    try:
+        await query.answer()
+        await query.edit_message_text(
+            text='Введи телефон:')
+        context.user_data['partial_update'] = True
+        context.user_data['waiting_for_phone'] = True
+    except telegram.error as tg_error:
+        logger.critical(f'Что-то пошло не так: {tg_error}')
 
 
 async def change_other_info(update: Update, context: CallbackQueryHandler):
@@ -321,11 +383,14 @@ async def change_other_info(update: Update, context: CallbackQueryHandler):
     Обработка кнопки "Изменить другие данные".
     """
     query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        text='Введи дополнительную информацию:')
-    context.user_data['partial_update'] = True
-    context.user_data['waiting_for_other_info'] = True
+    try:
+        await query.answer()
+        await query.edit_message_text(
+            text='Введи дополнительную информацию:')
+        context.user_data['partial_update'] = True
+        context.user_data['waiting_for_other_info'] = True
+    except telegram.error as tg_error:
+        logger.critical(f'Что-то пошло не так: {tg_error}')
 
 
 # Обработчик команды /list
@@ -344,19 +409,23 @@ async def users_count_first_ten_users(update: Update,
     )
     chat_id = update.effective_message.chat_id
     query = update.callback_query
-    await query.answer()
-    total_users = get_total_users()
-    users_list = get_users_list()
-    message_text = '\n'.join(users_list[:10])
-    await bot.send_message(
-        chat_id=chat_id,
-        text=f'Общее количество участников: {total_users}'
-    )
-    await bot.send_message(
-        chat_id=chat_id,
-        text=f'Список участников (будут показаны первые 10):\n{message_text}',
-        reply_markup=keyboard
-    )
+    try:
+        await query.answer()
+        total_users = get_total_users()
+        users_list = get_users_list()
+        message_text = '\n'.join(users_list[:10])
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f'Общее количество участников: {total_users}'
+        )
+        await bot.send_message(
+            chat_id=chat_id,
+            text=('Список участников (будут показаны первые 10):'
+                  f'\n{message_text}'),
+            reply_markup=keyboard
+        )
+    except telegram.error as tg_error:
+        logger.critical(f'Что-то пошло не так: {tg_error}')
 
 
 async def get_participants_list(update: Update, context: CallbackContext):
@@ -367,10 +436,13 @@ async def get_participants_list(update: Update, context: CallbackContext):
     chat_id = update.effective_message.chat_id
     users_list = get_users_list()
     message_text = '\n'.join(users_list)
-    await bot.send_message(
-        chat_id=chat_id,
-        text=f'Список всех участников:\n{message_text}'
-    )
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f'Список всех участников:\n{message_text}'
+        )
+    except telegram.error as tg_error:
+        logger.critical(f'Что-то пошло не так: {tg_error}')
 
 
 def get_total_users():
@@ -399,7 +471,7 @@ def get_users_list():
             query = cursor.execute('''
                 select full_name from users;
             ''')
-            user_list = [user[0] for user in query.fetchall()]
+            user_list = query.fetchall()[0]
         except sqlite3.Error as error:
             logger.error(f'Проблема с получением данных из БД: {error}')
     return user_list
@@ -425,7 +497,7 @@ def assign_santas_recievers() -> None:
     return write_santas_to_db(list_of_santas)
 
 
-async def sending_messages():
+async def sending_messages(update: Update, context: CallbackContext):
     """
     Метод для рассылки сообщений после распределения участников.
     """
@@ -442,19 +514,29 @@ async def sending_messages():
                     from users;
                 ''')
             for santa in query.fetchall():
-                chat_id, gift_reciever_full_name, gift_reciever_address, gift_reciever_phone_number, gift_reciever_other_info = santa
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=(
-                        'Распределение участников завершено.\n'
-                        f'Тебе нужно сделать подарок для - {gift_reciever_full_name}.\n'
-                        f'Отправить подарок можно по адресу - {gift_reciever_address}.\n'
-                        'Если нужно что-то уточнить у одариваемого, '
-                        f'то вот номер - {gift_reciever_phone_number}.\n'
-                        'А это дополнительная информация, которую он оставил, '
-                        f'вдруг пригодится - {gift_reciever_other_info}'
+                (chat_id,
+                 gift_reciever_full_name,
+                 gift_reciever_address,
+                 gift_reciever_phone_number,
+                 gift_reciever_other_info) = santa
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            'Распределение участников завершено.\n'
+                            'Тебе нужно сделать подарок для - '
+                            f'{gift_reciever_full_name}.\n'
+                            f'Отправить подарок можно по адресу - '
+                            f'{gift_reciever_address}.\n'
+                            'Если нужно что-то уточнить у одариваемого, '
+                            f'то вот номер - {gift_reciever_phone_number}.\n'
+                            'А это дополнительная информация, которую он '
+                            'оставил, вдруг пригодится - '
+                            f'{gift_reciever_other_info}'
+                            )
                         )
-                    )
+                except telegram.error as tg_error:
+                    logger.critical(f'Что-то пошло не так: {tg_error}')
     except sqlite3.Error as error:
         logger.error(f'Проблема с получением данных из БД: {error}')
 
@@ -476,7 +558,11 @@ def write_santas_to_db(santa_pairs):
                         ''')
                 query = cursor.execute(select_query)
                 for reciever_data in query.fetchall():
-                    reciever_chat_id, reciever_full_name, reciever_address, reciever_phone, reciever_other_info = reciever_data
+                    (reciever_chat_id,
+                     reciever_full_name,
+                     reciever_address,
+                     reciever_phone,
+                     reciever_other_info) = reciever_data
                     update_query = ('''UPDATE users
                                     SET gift_reciever_chat_id = ?,
                                     gift_reciever_full_name = ?,
@@ -504,7 +590,8 @@ def secret_santa_algorithm(participants):
         fake_reciever = None
 
         random.shuffle(participants)
-        santa_pairs = {participants[i]: participants[(i + 1) % len(participants)] for i in range(len(participants))}
+        santa_pairs = {participants[i]: participants[(i + 1) % len(
+            participants)] for i in range(len(participants))}
 
         for santa, receiver in santa_pairs.items():
             if santa == 'Фиктивный участник':
@@ -520,7 +607,8 @@ def secret_santa_algorithm(participants):
         santa_pairs[fake_santa] = fake_reciever
     else:
         random.shuffle(participants)
-        santa_pairs = {participants[i]: participants[(i + 1) % len(participants)] for i in range(len(participants))}
+        santa_pairs = {participants[i]: participants[(i + 1) % len(
+            participants)] for i in range(len(participants))}
     return santa_pairs
 
 
@@ -550,20 +638,24 @@ def main() -> None:
                   CallbackQueryHandler(change_phone, 'change_phone'),
                   CommandHandler('change_other_info', change_other_info),
                   CallbackQueryHandler(change_other_info, 'change_other_info'),
+                  CommandHandler('x_moment', sending_messages),
+                  CallbackQueryHandler(sending_messages, 'x_moment'),
                   )
                 )
 
     # Запуск бота
-    application.run_polling()
+    try:
+        application.run_polling()
+        logger.info('Успешный старт')
+    except telegram.error as error:
+        logger.critical(f'Что-то пошло не так: {error}')
 
     if datetime.datetime.now() >= X_DATE:
         assign_santas_recievers()
-        # проблема с асинхронностью 
-        # await sending_messages()
 
 
 if __name__ == '__main__':
-    # создаем логгер
+    # настраиваем логгер
     logging.basicConfig(
         level=logging.INFO,
         filename='secret_santa.log',
