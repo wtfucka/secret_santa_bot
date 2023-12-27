@@ -471,7 +471,7 @@ def get_users_list():
             query = cursor.execute('''
                 select full_name from users;
             ''')
-            user_list = query.fetchall()[0]
+            user_list = [user[0] for user in query.fetchall()]
         except sqlite3.Error as error:
             logger.error(f'Проблема с получением данных из БД: {error}')
     return user_list
