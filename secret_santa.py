@@ -202,8 +202,8 @@ async def participant_user_input(update: Update,
         context.user_data['other_info'] = user_input
         context.user_data['waiting_for_other_info'] = False
 
-    if context.user_data.get('update_all_data', False):
-        return await update_data_on_db(update, context)
+        if context.user_data.get('update_all_data', False):
+            return await update_data_on_db(update, context)
 
     return await write_data_to_db(update, context)
 
