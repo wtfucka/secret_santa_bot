@@ -18,7 +18,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-X_DATE = datetime.datetime(2023, 12, 30)
+X_DATE = datetime.datetime(2023, 12, 29)
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID'))
@@ -40,13 +40,17 @@ def get_admin_keybord() -> InlineKeyboardMarkup:
         'Список участников',
         callback_data='user_list',
     )
+    button_delete_user = InlineKeyboardButton(
+        'Удалить пользователя',
+        callback_data='delete_user',
+    )
     button_sending_messages = InlineKeyboardButton(
         'Распределение и отправка сообщений',
         callback_data='x_moment',
     )
     keyboard = InlineKeyboardMarkup(
         [[button_join, button_edit_profile],
-         [button_user_list],
+         [button_user_list, button_delete_user],
          [button_sending_messages]]
     )
     return keyboard
@@ -205,6 +209,11 @@ async def participant_user_input(update: Update,
         if context.user_data.get('update_all_data', False):
             return await update_data_on_db(update, context)
 
+    # если выбран пункт удаление пользователя (доступно только админу)
+    if context.user_data.get('delete_data', False):
+        context.user_data['chat_id'] = user_input
+        return await delete_from_db(update, context)
+
     return await write_data_to_db(update, context)
 
 
@@ -318,6 +327,29 @@ async def update_data_on_db(update: Update, context: CallbackContext):
         context.user_data.clear()
 
 
+async def delete_from_db(update: Update, context: CallbackContext):
+    chat_id_for_delete = context.user_data.get('chat_id')
+    query = f'DELETE FROM users WHERE chat_id = {chat_id_for_delete};'
+    try:
+        with sqlite3.connect('secret_santa.db') as connection:
+            cursor = connection.cursor()
+            cursor.execute(query)
+            connection.commit()
+        try:
+            await update.message.reply_text(
+                'Пользователь удален.'
+            )
+        except telegram.error as tg_error:
+            logger.critical(f'Что-то пошло не так: {tg_error}')
+    except sqlite3.Error as error:
+        logger.error(f'Проблема с удалением данных из БД: {error}')
+        await update.message.reply_text(
+            'Что-то пошло не так, попробуй еще раз.'
+        )
+    finally:
+        context.user_data.clear()
+
+
 # Обработчик команды /edit
 async def edit(update: Update, context: CallbackContext) -> None:
     """
@@ -329,6 +361,22 @@ async def edit(update: Update, context: CallbackContext) -> None:
         await query.edit_message_text(
             text='Какие данные хочешь изменить?',
             reply_markup=get_keybord_for_edit_button())
+    except telegram.error as tg_error:
+        logger.critical(f'Что-то пошло не так: {tg_error}')
+
+
+# Обработчик команды /delete
+async def delete(update: Update, context: CallbackContext) -> None:
+    """
+    Обработка кнопки "Удалить пользователя".
+    """
+    query = update.callback_query
+    context.user_data['delete_data'] = True
+
+    try:
+        await query.answer()
+        await query.edit_message_text(
+            text='Какого пользователя хочешь удалить?')
     except telegram.error as tg_error:
         logger.critical(f'Что-то пошло не так: {tg_error}')
 
@@ -630,6 +678,8 @@ def main() -> None:
                                        'all_participants'),
                   CommandHandler('edit', edit),
                   CallbackQueryHandler(edit, 'edit'),
+                  CommandHandler('delete_user', delete),
+                  CallbackQueryHandler(delete, 'delete'),
                   CommandHandler('change_name', change_name),
                   CallbackQueryHandler(change_name, 'change_name'),
                   CommandHandler('change_address', change_address),
